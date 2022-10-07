@@ -75,6 +75,11 @@ public class CacheSettings
     private TimeSpan? _defaultEvictionSlidingExpiration = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Gets or sets a value indicating whether to explicitly cache evicted instances.
+    /// </summary>
+    public bool ExplicitlyCacheEvictions { get; set; } = true;
+
+    /// <summary>
     /// Sets the default absolute expiration value for types.
     /// </summary>
     /// <param name="defaultAbsoluteExpiration">The default value.</param>

@@ -20,10 +20,7 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
-using System;
 using JetBrains.Annotations;
-using Microsoft.Extensions.Caching.Distributed;
-using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -44,7 +41,7 @@ public static class ServiceCollectionExtensions
     /// Adds a redis-backed caching implementations of various API types, overriding the normally non-caching versions.
     /// </summary>
     /// <remarks>
-    /// The cache uses a run-of-the-mill <see cref="IDistributedCache"/>. Cache entry options for any cached type can be
+    /// The cache uses a custom implementation of the redis cache based on bare <see cref="IConnectionMultiplexer"/>. Cache entry options for any cached type can be
     /// configured using <see cref="IOptions{TOptions}"/>.
     ///
     /// When choosing a cache implementation, it should be noted that choosing this will override the backing store for
@@ -59,25 +56,28 @@ public static class ServiceCollectionExtensions
     /// by the provider implementation this method adds.
     /// </remarks>
     /// <param name="services">The services.</param>
-    /// <param name="configureRedisAction">An action to configure the redis cache. If none is specified, a
+    /// <param name="redisConfiguration">A redis configuration. If none is specified, a
     /// default connection of localhost:6379 will be used.</param>
     /// <returns>The services, with caching enabled.</returns>
     public static IServiceCollection AddDiscordRedisCaching
     (
         this IServiceCollection services,
-        Action<RedisCacheOptions>? configureRedisAction = null
+        ConfigurationOptions? redisConfiguration = null
     )
     {
-        configureRedisAction ??= s => s.ConfigurationOptions = new ConfigurationOptions
+        redisConfiguration ??= new ConfigurationOptions
         {
             EndPoints = { { "localhost", 6379 } }
         };
 
         services.AddDiscordCaching();
-        services.AddStackExchangeRedisCache(configureRedisAction);
+
+        services.AddSingleton(ConnectionMultiplexer.Connect(redisConfiguration));
+        services.AddSingleton<IConnectionMultiplexer>(s => s.GetRequiredService<ConnectionMultiplexer>());
 
         services.TryAddSingleton<RedisCacheProvider>();
         services.AddSingleton<ICacheProvider>(s => s.GetRequiredService<RedisCacheProvider>());
+        services.AddSingleton<IAtomicCacheProvider>(s => s.GetRequiredService<RedisCacheProvider>());
         return services;
     }
 }

@@ -25,10 +25,12 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using JetBrains.Annotations;
-using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Options;
 using Remora.Discord.Caching.Abstractions.Services;
+using Remora.Discord.Caching.Redis.Extensions;
+using Remora.Discord.Caching.Redis.Results;
 using Remora.Results;
+using StackExchange.Redis;
 
 namespace Remora.Discord.Caching.Redis.Services;
 
@@ -36,19 +38,21 @@ namespace Remora.Discord.Caching.Redis.Services;
 /// Handles cache insert/evict operations for various types, using Redis as a backing-store.
 /// </summary>
 [PublicAPI]
-public class RedisCacheProvider : ICacheProvider
+public class RedisCacheProvider : IAtomicCacheProvider
 {
-    private readonly IDistributedCache _cache;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly IDatabase _cache;
+    private readonly IConnectionMultiplexer _multiplexer;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RedisCacheProvider"/> class.
     /// </summary>
-    /// <param name="cache">The redis cache.</param>
+    /// <param name="multiplexer">The redis cache.</param>
     /// <param name="jsonOptions">The JSON options.</param>
-    public RedisCacheProvider(IDistributedCache cache, IOptionsMonitor<JsonSerializerOptions> jsonOptions)
+    public RedisCacheProvider(IConnectionMultiplexer multiplexer, IOptionsMonitor<JsonSerializerOptions> jsonOptions)
     {
-        _cache = cache;
+        _cache = multiplexer.GetDatabase();
+        _multiplexer = multiplexer;
         _jsonOptions = jsonOptions.Get("Discord");
     }
 
@@ -70,6 +74,8 @@ public class RedisCacheProvider : ICacheProvider
     )
         where TInstance : class
     {
+        ct.ThrowIfCancellationRequested();
+
         if (absoluteExpiration >= DateTimeOffset.UtcNow)
         {
             return;
@@ -77,13 +83,16 @@ public class RedisCacheProvider : ICacheProvider
 
         var serialized = JsonSerializer.Serialize(instance, _jsonOptions);
 
-        var options = new DistributedCacheEntryOptions
-        {
-            AbsoluteExpiration = absoluteExpiration,
-            SlidingExpiration = slidingExpiration
-        };
-
-        await _cache.SetStringAsync(key, serialized, options, ct);
+        await _cache.ScriptEvaluateAsync(
+            LuaScripts.SetScript,
+            new RedisKey[] { key },
+            new RedisValue[]
+                {
+                    absoluteExpiration?.ToUnixTimeSeconds() ?? LuaScripts.NotPresentArg,
+                    slidingExpiration?.TotalSeconds ?? LuaScripts.NotPresentArg,
+                    GetExpirationInSeconds(DateTimeOffset.UtcNow, absoluteExpiration, slidingExpiration) ?? LuaScripts.NotPresentArg,
+                    serialized
+                }).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="ICacheProvider.RetrieveAsync{TInstance}"/>
@@ -101,16 +110,25 @@ public class RedisCacheProvider : ICacheProvider
     )
         where TInstance : class
     {
-        var value = await _cache.GetAsync(key, ct);
+        ct.ThrowIfCancellationRequested();
 
-        if (value is null)
+        var result = await _cache.ScriptEvaluateAsync(
+                LuaScripts.GetAndRefreshScript,
+                new RedisKey[] { key },
+                new RedisValue[] { LuaScripts.ReturnDataArg })
+                .ConfigureAwait(false);
+
+        if (result.IsNull)
         {
-            return new NotFoundError($"The given key \"{key}\" held no value in the cache.");
+            return new NotFoundError($"The given key \"{key}\" held no session in the cache.");
         }
 
-        await _cache.RefreshAsync(key, ct);
+        if (!result.TryExtractString(out var extracted))
+        {
+            return new UnexpectedRedisResultError(result);
+        }
 
-        var deserialized = JsonSerializer.Deserialize<TInstance>(value, _jsonOptions);
+        var deserialized = JsonSerializer.Deserialize<TInstance>(extracted, _jsonOptions);
 
         return deserialized;
     }
@@ -118,16 +136,20 @@ public class RedisCacheProvider : ICacheProvider
     /// <inheritdoc />
     public async ValueTask<Result> EvictAsync(string key, CancellationToken ct = default)
     {
-        var existingValue = await _cache.GetAsync(key, ct);
+        ct.ThrowIfCancellationRequested();
 
-        if (existingValue is null)
+        var result = await _cache.ScriptEvaluateAsync(
+                LuaScripts.EvictScript,
+                new RedisKey[] { key },
+                new RedisValue[] { LuaScripts.DontReturnDataArg })
+                .ConfigureAwait(false);
+
+        if (result.IsNull)
         {
             return new NotFoundError($"The given key \"{key}\" held no value in the cache.");
         }
 
-        await _cache.RemoveAsync(key, ct);
-
-        return Result.FromSuccess();
+        return !result.TryExtractString(out _) ? new UnexpectedRedisResultError(result) : Result.FromSuccess();
     }
 
     /// <inheritdoc cref="ICacheProvider.EvictAsync{TInstance}"/>
@@ -141,17 +163,140 @@ public class RedisCacheProvider : ICacheProvider
     public virtual async ValueTask<Result<TInstance>> EvictAsync<TInstance>(string key, CancellationToken ct = default)
         where TInstance : class
     {
-        var existingValue = await _cache.GetAsync(key, ct);
+        ct.ThrowIfCancellationRequested();
 
-        if (existingValue is null)
+        var result = await _cache.ScriptEvaluateAsync(
+                LuaScripts.EvictScript,
+                new RedisKey[] { key },
+                new RedisValue[] { LuaScripts.ReturnDataArg })
+                .ConfigureAwait(false);
+
+        if (result.IsNull)
         {
             return new NotFoundError($"The given key \"{key}\" held no value in the cache.");
         }
 
-        await _cache.RemoveAsync(key, ct);
+        if (!result.TryExtractString(out var extracted))
+        {
+            return new UnexpectedRedisResultError(result);
+        }
 
-        var deserialized = JsonSerializer.Deserialize<TInstance>(existingValue, _jsonOptions);
+        var deserialized = JsonSerializer.Deserialize<TInstance>(extracted, _jsonOptions);
 
         return deserialized;
+    }
+
+    /// <inheritdoc cref="IAtomicCacheProvider.EvictAndCacheAsync"/>
+    /// <remarks>
+    /// It should be noted that in this implementation of <see cref="IAtomicCacheProvider.EvictAndCacheAsync"/>,
+    /// there is a strong reliance on the fact that the entity being cached is trivially deserializable from JSON.
+    ///
+    /// In the event that this is not the case, this method can be overridden in a derived class to provide
+    /// a more apt transformation of evicted data.
+    /// </remarks>
+    public async ValueTask<Result> EvictAndCacheAsync
+    (
+        string key,
+        string evictedKey,
+        DateTimeOffset? absoluteExpiration = null,
+        TimeSpan? slidingExpiration = null,
+        CancellationToken ct = default
+    )
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var result = await _cache.ScriptEvaluateAsync(
+                LuaScripts.EvictAndCacheScript,
+                new RedisKey[] { key },
+                new RedisValue[]
+                {
+                    absoluteExpiration?.ToUnixTimeSeconds() ?? LuaScripts.NotPresentArg,
+                    slidingExpiration?.TotalSeconds ?? LuaScripts.NotPresentArg,
+                    GetExpirationInSeconds(DateTimeOffset.UtcNow, absoluteExpiration, slidingExpiration) ?? LuaScripts.NotPresentArg,
+                    LuaScripts.DontReturnDataArg,
+                    evictedKey
+                })
+                .ConfigureAwait(false);
+
+        if (result.IsNull)
+        {
+            return new NotFoundError($"The given key \"{key}\" held no value in the cache.");
+        }
+
+        return !result.TryExtractString(out _) ? new UnexpectedRedisResultError(result) : Result.FromSuccess();
+    }
+
+    /// <inheritdoc cref="IAtomicCacheProvider.EvictAndCacheAsync{TInstance}"/>
+    /// <remarks>
+    /// It should be noted that in this implementation of <see cref="IAtomicCacheProvider.EvictAndCacheAsync{TInstance}"/>,
+    /// there is a strong reliance on the fact that the entity being cached is trivially deserializable from JSON.
+    ///
+    /// In the event that this is not the case, this method can be overridden in a derived class to provide
+    /// a more apt transformation of evicted data.
+    /// </remarks>
+    public async ValueTask<Result<TInstance>> EvictAndCacheAsync<TInstance>
+    (
+        string key,
+        string evictedKey,
+        DateTimeOffset? absoluteExpiration = null,
+        TimeSpan? slidingExpiration = null,
+        CancellationToken ct = default
+    ) where TInstance : class
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var result = await _cache.ScriptEvaluateAsync(
+                LuaScripts.EvictScript,
+                new RedisKey[] { key },
+                new RedisValue[]
+                {
+                    absoluteExpiration?.ToUnixTimeSeconds() ?? LuaScripts.NotPresentArg,
+                    slidingExpiration?.TotalSeconds ?? LuaScripts.NotPresentArg,
+                    GetExpirationInSeconds(DateTimeOffset.UtcNow, absoluteExpiration, slidingExpiration) ?? LuaScripts.NotPresentArg,
+                    LuaScripts.DontReturnDataArg,
+                    evictedKey
+                })
+                .ConfigureAwait(false);
+
+        if (result.IsNull)
+        {
+            return new NotFoundError($"The given key \"{key}\" held no value in the cache.");
+        }
+
+        if (!result.TryExtractString(out var extracted))
+        {
+            return new UnexpectedRedisResultError(result);
+        }
+
+        var deserialized = JsonSerializer.Deserialize<TInstance>(extracted, _jsonOptions);
+
+        return deserialized;
+    }
+
+    /// <summary>
+    /// Gets expiration time in seconds.
+    /// </summary>
+    /// <param name="creationTime">Creation time.</param>
+    /// <param name="absoluteExpiration">Absolute expiration.</param>
+    /// <param name="slidingExpiration">Sliding expiration.</param>
+    /// <returns>Expiration time in seconds.</returns>
+    private static long? GetExpirationInSeconds(DateTimeOffset creationTime, DateTimeOffset? absoluteExpiration, TimeSpan? slidingExpiration)
+    {
+        if (absoluteExpiration.HasValue && slidingExpiration.HasValue)
+        {
+            return (long)Math.Min((absoluteExpiration.Value - creationTime).TotalSeconds, slidingExpiration.Value.TotalSeconds);
+        }
+
+        if (absoluteExpiration.HasValue)
+        {
+            return (long)(absoluteExpiration.Value - creationTime).TotalSeconds;
+        }
+
+        if (slidingExpiration.HasValue)
+        {
+            return (long)slidingExpiration.Value.TotalSeconds;
+        }
+
+        return null;
     }
 }
