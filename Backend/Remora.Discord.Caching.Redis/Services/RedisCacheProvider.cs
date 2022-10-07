@@ -120,7 +120,7 @@ public class RedisCacheProvider : IAtomicCacheProvider
 
         if (result.IsNull)
         {
-            return new NotFoundError($"The given key \"{key}\" held no session in the cache.");
+            return new NotFoundError($"The given key \"{key}\" held no value in the cache.");
         }
 
         if (!result.TryExtractString(out var extracted))
