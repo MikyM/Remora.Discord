@@ -31,14 +31,19 @@ using Remora.Results;
 
 namespace Remora.Discord.Caching.Services;
 
+/// <inheritdoc cref="ICacheService"/>
 /// <summary>
 /// Handles cache insert/evict operations for various types.
 /// </summary>
 [PublicAPI]
-public class CacheService
+public class CacheService : ICacheService
 {
     private readonly ICacheProvider _cacheProvider;
-    private readonly CacheSettings _cacheSettings;
+
+    /// <summary>
+    /// Gets the cache settings.
+    /// </summary>
+    protected CacheSettings CacheSettings { get; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CacheService"/> class.
@@ -48,22 +53,14 @@ public class CacheService
     public CacheService(ICacheProvider cacheProvider, IOptions<CacheSettings> cacheSettings)
     {
         _cacheProvider = cacheProvider;
-        _cacheSettings = cacheSettings.Value;
+        this.CacheSettings = cacheSettings.Value;
     }
 
-    /// <summary>
-    /// Caches a value. Certain instance types may have specializations which cache more than one value from the
-    /// instance.
-    /// </summary>
-    /// <param name="key">The cache key.</param>
-    /// <param name="instance">The instance.</param>
-    /// <param name="ct">A cancellation token to cancel the operation.</param>
-    /// <typeparam name="TInstance">The instance type.</typeparam>
-    /// <returns>A <see cref="ValueTask"/> representing the potentially asynchronous operation.</returns>
+    /// <inheritdoc cref="ICacheService.CacheAsync{TInstance}"/>
     public async ValueTask CacheAsync<TInstance>(string key, TInstance instance, CancellationToken ct = default)
         where TInstance : class
     {
-        if (_cacheSettings.GetAbsoluteExpirationOrDefault(typeof(TInstance)) is var absoluteExpiration)
+        if (this.CacheSettings.GetAbsoluteExpirationOrDefault(typeof(TInstance)) is var absoluteExpiration)
         {
             if (absoluteExpiration == TimeSpan.Zero)
             {
@@ -90,72 +87,13 @@ public class CacheService
         await cacheAction();
     }
 
-    /// <summary>
-    /// Attempts to retrieve a value from the cache.
-    /// </summary>
-    /// <param name="key">The cache key.</param>
-    /// <param name="ct">A cancellation token to cancel the operation.</param>
-    /// <typeparam name="TInstance">The instance type.</typeparam>
-    /// <returns>A <see cref="Result"/> that may or not have succeeded.</returns>
+    /// <inheritdoc cref="ICacheService.TryGetValueAsync{TInstance}"/>
     public ValueTask<Result<TInstance>> TryGetValueAsync<TInstance>(string key, CancellationToken ct = default)
         where TInstance : class => _cacheProvider.RetrieveAsync<TInstance>(key, ct);
 
-    /// <summary>
-    /// Attempts to retrieve the previous value of the given key from the eviction cache.
-    /// </summary>
-    /// <param name="key">The cache key.</param>
-    /// <typeparam name="TInstance">The instance type.</typeparam>
-    /// <returns>A <see cref="Result"/> that may or not have succeeded.</returns>
-    public ValueTask<Result<TInstance>> TryGetPreviousValueAsync<TInstance>(string key)
-        where TInstance : class => _cacheProvider.RetrieveAsync<TInstance>(KeyHelpers.CreateEvictionCacheKey(key));
-
-    /// <summary>
-    /// Evicts the instance with the given key from the cache.
-    /// </summary>
-    /// <typeparam name="TInstance">The type of the value.</typeparam>
-    /// <param name="key">The cache key.</param>
-    /// <param name="ct">A cancellation token to cancel the operation.</param>
-    /// <returns>A <see cref="ValueTask"/> representing the potentially asynchronous operation.</returns>
-    public async ValueTask<Result<TInstance>> EvictAsync<TInstance>(string key, CancellationToken ct = default)
-        where TInstance : class
-    {
-        if (!_cacheSettings.ExplicitlyCacheEvictions)
-        {
-            return await _cacheProvider.EvictAsync<TInstance>(key, ct);
-        }
-
-        var options = _cacheSettings.GetEvictionEntryOptions<TInstance>();
-
-        if (_cacheProvider is IAtomicCacheProvider atomicCacheProvider)
-        {
-            return await atomicCacheProvider.EvictAndCacheAsync<TInstance>
-            (
-                key,
-                KeyHelpers.CreateEvictionCacheKey(key),
-                options.AbsoluteExpiration,
-                options.SlidingExpiration,
-                ct
-            );
-        }
-
-        var evictionResult = await _cacheProvider.EvictAsync<TInstance>(key, ct);
-
-        if (!evictionResult.IsDefined(out var evictedEntity))
-        {
-            return evictionResult;
-        }
-
-        await _cacheProvider.CacheAsync
-        (
-            KeyHelpers.CreateEvictionCacheKey(key),
-            evictedEntity,
-            options.AbsoluteExpiration,
-            options.SlidingExpiration,
-            ct
-        );
-
-        return evictedEntity;
-    }
+    /// <inheritdoc cref="ICacheService.EvictAsync{TInstance}"/>
+    public virtual async ValueTask<Result<TInstance>> EvictAsync<TInstance>(string key, CancellationToken ct = default)
+        where TInstance : class => await _cacheProvider.EvictAsync<TInstance>(key, ct);
 
     private async ValueTask CacheWebhookAsync(string key, IWebhook webhook)
     {
@@ -324,7 +262,7 @@ public class CacheService
     private ValueTask CacheInstanceAsync<TInstance>(string key, TInstance instance)
         where TInstance : class
     {
-        var options = _cacheSettings.GetEntryOptions<TInstance>();
+        var options = this.CacheSettings.GetEntryOptions<TInstance>();
         return _cacheProvider.CacheAsync(key, instance, options.AbsoluteExpiration, options.SlidingExpiration);
     }
 }

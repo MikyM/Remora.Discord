@@ -20,12 +20,14 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
+using System;
 using JetBrains.Annotations;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Remora.Discord.API.Abstractions.Rest;
+using Remora.Discord.Caching.Abstractions.Services;
 using Remora.Discord.Caching.API;
 using Remora.Discord.Caching.Responders;
 using Remora.Discord.Caching.Services;
@@ -45,18 +47,30 @@ public static class ServiceCollectionExtensions
     /// Adds caching implementations of various API types, overriding the normally non-caching versions.
     /// </summary>
     /// <remarks>
-    /// The cache uses a run-of-the-mill <see cref="IMemoryCache"/>. Cache entry options for any cached type can be
-    /// configured using <see cref="IOptions{CacheSettings}"/>.
+    /// The cache uses a run-of-the-mill <see cref="IMemoryCache"/>.
     ///
     /// When choosing a cache implementation, it should be noted that choosing this will override the backing store for
     /// caching REST clients and responders.
     /// </remarks>
     /// <param name="services">The services.</param>
+    /// <param name="cacheEvictedValues">Whether to cache evicted values.</param>
     /// <returns>The services, with caching enabled.</returns>
-    public static IServiceCollection AddDiscordCaching(this IServiceCollection services)
+    public static IServiceCollection AddDiscordCaching(this IServiceCollection services, bool cacheEvictedValues = false)
     {
-        services.TryAddSingleton<CacheService>();
         services.AddOptions<CacheSettings>();
+
+        if (cacheEvictedValues)
+        {
+            services.TryAddSingleton<EvictionCachingCacheService>();
+            services.TryAddSingleton<CacheService>(s => s.GetRequiredService<EvictionCachingCacheService>());
+            services.TryAddSingleton<IEvictionCachingCacheService>(s => s.GetRequiredService<EvictionCachingCacheService>());
+            services.TryAddSingleton<ICacheService>(s => s.GetRequiredService<EvictionCachingCacheService>());
+        }
+        else
+        {
+            services.TryAddSingleton<CacheService>();
+            services.TryAddSingleton<ICacheService>(s => s.GetRequiredService<CacheService>());
+        }
 
         services
             .Decorate<IDiscordRestChannelAPI, CachingDiscordRestChannelAPI>()

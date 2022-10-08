@@ -1,5 +1,5 @@
 //
-//  IAtomicCacheProvider.cs
+//  IEvictionCachingCacheProvider.cs
 //
 //  Author:
 //       Jarl Gullberg <jarl.gullberg@gmail.com>
@@ -30,10 +30,10 @@ namespace Remora.Discord.Caching.Abstractions.Services;
 
 /// <inheritdoc cref="ICacheProvider"/>
 /// <summary>
-/// Represents an abstraction between a cache service and it's backing store that provides atomic operations on top of regular CRUD operations.
+/// Represents an abstraction between a cache service and it's backing store and supports caching evicted values.
 /// </summary>
 [PublicAPI]
-public interface IAtomicCacheProvider : ICacheProvider
+public interface IEvictionCachingCacheProvider : ICacheProvider
 {
     /// <summary>
     /// Evicts a key from the backing store and re-caches it as an atomic operation.

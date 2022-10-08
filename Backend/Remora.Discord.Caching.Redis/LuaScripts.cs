@@ -23,7 +23,7 @@
 namespace Remora.Discord.Caching.Redis;
 
 /// <summary>
-/// Represents an abstraction between a cache service and it's backing store that provides atomic operations.
+/// Lua scripts for atomic redis operations.
 /// </summary>
 internal static class LuaScripts
 {

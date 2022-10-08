@@ -58,11 +58,13 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The services.</param>
     /// <param name="redisConfiguration">A redis configuration. If none is specified, a
     /// default connection of localhost:6379 will be used.</param>
+    /// <param name="cacheEvictedValues">Whether to cache evicted values.</param>
     /// <returns>The services, with caching enabled.</returns>
     public static IServiceCollection AddDiscordRedisCaching
     (
         this IServiceCollection services,
-        ConfigurationOptions? redisConfiguration = null
+        ConfigurationOptions? redisConfiguration = null,
+        bool cacheEvictedValues = false
     )
     {
         redisConfiguration ??= new ConfigurationOptions
@@ -70,14 +72,14 @@ public static class ServiceCollectionExtensions
             EndPoints = { { "localhost", 6379 } }
         };
 
-        services.AddDiscordCaching();
+        services.AddDiscordCaching(cacheEvictedValues);
 
         services.AddSingleton(ConnectionMultiplexer.Connect(redisConfiguration));
         services.AddSingleton<IConnectionMultiplexer>(s => s.GetRequiredService<ConnectionMultiplexer>());
 
         services.TryAddSingleton<RedisCacheProvider>();
         services.AddSingleton<ICacheProvider>(s => s.GetRequiredService<RedisCacheProvider>());
-        services.AddSingleton<IAtomicCacheProvider>(s => s.GetRequiredService<RedisCacheProvider>());
+        services.AddSingleton<IEvictionCachingCacheProvider>(s => s.GetRequiredService<RedisCacheProvider>());
         return services;
     }
 }

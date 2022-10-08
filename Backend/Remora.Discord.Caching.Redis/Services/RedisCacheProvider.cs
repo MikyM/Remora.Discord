@@ -38,7 +38,7 @@ namespace Remora.Discord.Caching.Redis.Services;
 /// Handles cache insert/evict operations for various types, using Redis as a backing-store.
 /// </summary>
 [PublicAPI]
-public class RedisCacheProvider : IAtomicCacheProvider
+public class RedisCacheProvider : IEvictionCachingCacheProvider
 {
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly IDatabase _cache;
@@ -83,16 +83,18 @@ public class RedisCacheProvider : IAtomicCacheProvider
 
         var serialized = JsonSerializer.Serialize(instance, _jsonOptions);
 
-        await _cache.ScriptEvaluateAsync(
-            LuaScripts.SetScript,
-            new RedisKey[] { key },
-            new RedisValue[]
-                {
-                    absoluteExpiration?.ToUnixTimeSeconds() ?? LuaScripts.NotPresentArg,
-                    slidingExpiration?.TotalSeconds ?? LuaScripts.NotPresentArg,
-                    GetExpirationInSeconds(DateTimeOffset.UtcNow, absoluteExpiration, slidingExpiration) ?? LuaScripts.NotPresentArg,
-                    serialized
-                }).ConfigureAwait(false);
+        await _cache.ScriptEvaluateAsync
+            (
+                LuaScripts.SetScript,
+                new RedisKey[] { key },
+                new RedisValue[]
+                    {
+                        absoluteExpiration?.ToUnixTimeSeconds() ?? LuaScripts.NotPresentArg,
+                        slidingExpiration?.TotalSeconds ?? LuaScripts.NotPresentArg,
+                        GetExpirationInSeconds(DateTimeOffset.UtcNow, absoluteExpiration, slidingExpiration) ?? LuaScripts.NotPresentArg,
+                        serialized
+                    }
+            ).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="ICacheProvider.RetrieveAsync{TInstance}"/>
@@ -112,11 +114,13 @@ public class RedisCacheProvider : IAtomicCacheProvider
     {
         ct.ThrowIfCancellationRequested();
 
-        var result = await _cache.ScriptEvaluateAsync(
+        var result = await _cache.ScriptEvaluateAsync
+            (
                 LuaScripts.GetAndRefreshScript,
                 new RedisKey[] { key },
-                new RedisValue[] { LuaScripts.ReturnDataArg })
-                .ConfigureAwait(false);
+                new RedisValue[] { LuaScripts.ReturnDataArg }
+            )
+            .ConfigureAwait(false);
 
         if (result.IsNull)
         {
@@ -138,11 +142,13 @@ public class RedisCacheProvider : IAtomicCacheProvider
     {
         ct.ThrowIfCancellationRequested();
 
-        var result = await _cache.ScriptEvaluateAsync(
+        var result = await _cache.ScriptEvaluateAsync
+            (
                 LuaScripts.EvictScript,
                 new RedisKey[] { key },
-                new RedisValue[] { LuaScripts.DontReturnDataArg })
-                .ConfigureAwait(false);
+                new RedisValue[] { LuaScripts.DontReturnDataArg }
+            )
+            .ConfigureAwait(false);
 
         if (result.IsNull)
         {
@@ -165,11 +171,13 @@ public class RedisCacheProvider : IAtomicCacheProvider
     {
         ct.ThrowIfCancellationRequested();
 
-        var result = await _cache.ScriptEvaluateAsync(
+        var result = await _cache.ScriptEvaluateAsync
+            (
                 LuaScripts.EvictScript,
                 new RedisKey[] { key },
-                new RedisValue[] { LuaScripts.ReturnDataArg })
-                .ConfigureAwait(false);
+                new RedisValue[] { LuaScripts.ReturnDataArg }
+            )
+            .ConfigureAwait(false);
 
         if (result.IsNull)
         {
@@ -186,9 +194,9 @@ public class RedisCacheProvider : IAtomicCacheProvider
         return deserialized;
     }
 
-    /// <inheritdoc cref="IAtomicCacheProvider.EvictAndCacheAsync"/>
+    /// <inheritdoc cref="IEvictionCachingCacheProvider.EvictAndCacheAsync"/>
     /// <remarks>
-    /// It should be noted that in this implementation of <see cref="IAtomicCacheProvider.EvictAndCacheAsync"/>,
+    /// It should be noted that in this implementation of <see cref="IEvictionCachingCacheProvider.EvictAndCacheAsync"/>,
     /// there is a strong reliance on the fact that the entity being cached is trivially deserializable from JSON.
     ///
     /// In the event that this is not the case, this method can be overridden in a derived class to provide
@@ -205,7 +213,8 @@ public class RedisCacheProvider : IAtomicCacheProvider
     {
         ct.ThrowIfCancellationRequested();
 
-        var result = await _cache.ScriptEvaluateAsync(
+        var result = await _cache.ScriptEvaluateAsync
+            (
                 LuaScripts.EvictAndCacheScript,
                 new RedisKey[] { key },
                 new RedisValue[]
@@ -215,8 +224,9 @@ public class RedisCacheProvider : IAtomicCacheProvider
                     GetExpirationInSeconds(DateTimeOffset.UtcNow, absoluteExpiration, slidingExpiration) ?? LuaScripts.NotPresentArg,
                     LuaScripts.DontReturnDataArg,
                     evictedKey
-                })
-                .ConfigureAwait(false);
+                }
+            )
+            .ConfigureAwait(false);
 
         if (result.IsNull)
         {
@@ -226,9 +236,9 @@ public class RedisCacheProvider : IAtomicCacheProvider
         return !result.TryExtractString(out _) ? new UnexpectedRedisResultError(result) : Result.FromSuccess();
     }
 
-    /// <inheritdoc cref="IAtomicCacheProvider.EvictAndCacheAsync{TInstance}"/>
+    /// <inheritdoc cref="IEvictionCachingCacheProvider.EvictAndCacheAsync{TInstance}"/>
     /// <remarks>
-    /// It should be noted that in this implementation of <see cref="IAtomicCacheProvider.EvictAndCacheAsync{TInstance}"/>,
+    /// It should be noted that in this implementation of <see cref="IEvictionCachingCacheProvider.EvictAndCacheAsync{TInstance}"/>,
     /// there is a strong reliance on the fact that the entity being cached is trivially deserializable from JSON.
     ///
     /// In the event that this is not the case, this method can be overridden in a derived class to provide
@@ -245,7 +255,8 @@ public class RedisCacheProvider : IAtomicCacheProvider
     {
         ct.ThrowIfCancellationRequested();
 
-        var result = await _cache.ScriptEvaluateAsync(
+        var result = await _cache.ScriptEvaluateAsync
+            (
                 LuaScripts.EvictScript,
                 new RedisKey[] { key },
                 new RedisValue[]
@@ -255,8 +266,9 @@ public class RedisCacheProvider : IAtomicCacheProvider
                     GetExpirationInSeconds(DateTimeOffset.UtcNow, absoluteExpiration, slidingExpiration) ?? LuaScripts.NotPresentArg,
                     LuaScripts.DontReturnDataArg,
                     evictedKey
-                })
-                .ConfigureAwait(false);
+                }
+            )
+            .ConfigureAwait(false);
 
         if (result.IsNull)
         {

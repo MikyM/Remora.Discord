@@ -34,7 +34,7 @@ namespace Remora.Discord.Rest.Caching;
 /// An <see cref="IMemoryCache"/>-backed cache provider.
 /// </summary>
 [PublicAPI]
-public class MemoryCacheProvider : ICacheProvider
+public class MemoryCacheProvider : IEvictionCachingCacheProvider
 {
     private readonly IMemoryCache _memoryCache;
 
@@ -110,5 +110,49 @@ public class MemoryCacheProvider : ICacheProvider
 
         _memoryCache.Remove(key);
         return new(existingValue);
+    }
+
+    /// <inheritdoc cref="IEvictionCachingCacheProvider.EvictAndCacheAsync"/>
+    public async ValueTask<Result> EvictAndCacheAsync
+    (
+        string key,
+        string evictedKey,
+        DateTimeOffset? absoluteExpiration = null,
+        TimeSpan? slidingExpiration = null,
+        CancellationToken ct = default
+    )
+    {
+        if (!_memoryCache.TryGetValue(key, out var value))
+        {
+            return new NotFoundError($"The key \"{key}\" did not contain a value in cache.");
+        }
+
+        _memoryCache.Remove(key);
+
+        await CacheAsync(evictedKey, value, absoluteExpiration, slidingExpiration, ct);
+
+        return Result.FromSuccess();
+    }
+
+    /// <inheritdoc cref="IEvictionCachingCacheProvider.EvictAndCacheAsync{TInstance}"/>
+    public async ValueTask<Result<TInstance>> EvictAndCacheAsync<TInstance>
+    (
+        string key,
+        string evictedKey,
+        DateTimeOffset? absoluteExpiration = null,
+        TimeSpan? slidingExpiration = null,
+        CancellationToken ct = default
+    ) where TInstance : class
+    {
+        if (!_memoryCache.TryGetValue(key, out TInstance value))
+        {
+            return new NotFoundError($"The key \"{key}\" did not contain a value in cache.");
+        }
+
+        _memoryCache.Remove(key);
+
+        await CacheAsync(evictedKey, value, absoluteExpiration, slidingExpiration, ct);
+
+        return value;
     }
 }
