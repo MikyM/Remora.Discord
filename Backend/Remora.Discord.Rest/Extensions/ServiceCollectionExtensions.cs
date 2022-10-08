@@ -71,7 +71,6 @@ public static class ServiceCollectionExtensions
 
         serviceCollection.TryAddSingleton<MemoryCacheProvider>();
         serviceCollection.AddSingleton<ICacheProvider>(s => s.GetRequiredService<MemoryCacheProvider>());
-        serviceCollection.AddSingleton<IEvictionCachingCacheProvider>(s => s.GetRequiredService<MemoryCacheProvider>());
 
         serviceCollection.ConfigureDiscordJsonConverters();
 

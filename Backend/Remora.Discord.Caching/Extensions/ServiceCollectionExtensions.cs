@@ -33,6 +33,7 @@ using Remora.Discord.Caching.Responders;
 using Remora.Discord.Caching.Services;
 using Remora.Discord.Gateway.Extensions;
 using Remora.Discord.Gateway.Responders;
+using Remora.Discord.Rest.Caching;
 using Remora.Discord.Rest.Extensions;
 
 namespace Remora.Discord.Caching.Extensions;
@@ -61,6 +62,8 @@ public static class ServiceCollectionExtensions
 
         if (cacheEvictedValues)
         {
+            services.AddSingleton<IEvictionCachingCacheProvider>(s => s.GetRequiredService<MemoryCacheProvider>());
+
             services.TryAddSingleton<EvictionCachingCacheService>();
             services.TryAddSingleton<CacheService>(s => s.GetRequiredService<EvictionCachingCacheService>());
             services.TryAddSingleton<IEvictionCachingCacheService>(s => s.GetRequiredService<EvictionCachingCacheService>());
